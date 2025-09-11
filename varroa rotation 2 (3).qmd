@@ -1,0 +1,407 @@
+---
+title: "Meta analysis of acaricide resistance in *Varroa destructor*"
+format: html
+---
+
+```{r setup =FALSE, warning=FALSE}
+library(tidyverse)
+library(readxl)
+library(brms)
+library(tidybayes)
+library(readr)
+library(dplyr)
+library(loo)
+library(patchwork)
+library(meta)
+```
+
+```{r read_data}
+dat <- read_xlsx("final data metaanalysis added SD.xlsx") %>%
+  mutate( # change spelling so everything uses "Tau-fluvalinate"
+    acaricide = recode(acaricide, "TauFluvalinate" = "Tau-fluvalinate"),
+         rot_mix = rotation | mixture,
+    n   = as.integer(n),
+    k   = round(prop_dead * n)     # successes = dead mites
+  )
+
+dat$acaricide <- factor(dat$acaricide, levels = c("None", "Amitraz", "Coumaphos", "Flumethrin", "Tau-fluvalinate")) 
+
+glimpse(dat)
+```
+
+
+```{r model, cache=TRUE}
+priors <- c(
+  prior(normal(0, 5), class = Intercept),
+  prior(exponential(1), class = sd)
+)
+
+fit <- brm(
+  k | trials(n) ~ 1 + (1 | study_id) +  acaricide + rotation + mixture + years_stopped + years_treated + rotation * mixture,
+  data   = dat,
+  family = binomial(link = "logit"),
+  prior  = priors,
+  chains = 4, cores = 4, seed = 202502,
+  save_pars = save_pars(all = TRUE) # necessary to save all parameters for LOO
+)
+
+summary(fit)
+```
+
+```{r}
+dat <- dat %>% mutate(scaled_log_conc = scale(log(conc + 1))) 
+
+priors2 <- c(
+  prior(normal(0, 5), class = Intercept),
+  prior(exponential(1), class = sd),
+  prior(normal(0, 2), class = b) # better prior for scaled concentration
+)
+
+fit2 <- brm(
+  k | trials(n) ~ 1 + (1 | study_id) + acaricide*scaled_log_conc + rotation + mixture + years_stopped + years_treated + rotation * mixture,
+  data = dat,
+  family = binomial(link = "logit"),
+  prior = priors2,
+  chains = 4, cores = 4, seed = 202502,
+  iter = 2000,
+  save_pars = save_pars(all = TRUE)
+)
+
+summary(fit2)
+
+```
+
+
+loo(fit2, fit)
+
+
+```{r}
+pp_check(fit2)
+```
+Compute heterogeneity via ICC
+```{r}
+vc <- VarCorr(fit)
+(ICC <- vc$study_id$sd[1]/(vc$study_id$sd[1] + pi**2/3))
+```
+Publication bias (funnel plot)
+
+```{r}
+
+#Row level effect
+# p_adj = (k+0.5)/(n+1) avoids issues when prop_dead is 0 or 1
+row_es <- dat %>%
+  mutate(
+     #Compute raw counts of dead mites: estimated deaths = proportion × sample size.
+    k_raw = prop_dead * n,
+    #Clamp k_raw to be between 0 and n (can’t have negative deaths or more deaths than mites).              
+    k     = pmin(pmax(k_raw, 0), n),  
+    #Continuity correction so probabilities are never exactly 0 or 1 (prevents infinities later).
+    p_adj = (k + 0.5) / (n + 1),
+    #Transform the adjusted proportion to the logit scale (log odds). This is the row’s effect size.
+    yi    = log(p_adj / (1 - p_adj)),  
+    #Approximate the sampling variance of that logit using the delta method.
+    vi    = 1 / (n * p_adj * (1 - p_adj)),  
+    #Standard error is the square root of the variance.
+    se    = sqrt(vi),
+    #Inverse-variance weight (more precise rows get larger weight).
+    w     = 1 / vi
+  )
+
+# Collapse to ONE effect per study (pool rows within the same study)
+study_es <- row_es %>%
+  #Group rows by study_id so we can combine within each study.
+  group_by(study_id) %>%
+  #Compute the weighted mean logit effect for that study (weights = inverse variances).
+  summarise(
+    yi_study = sum(w * yi, na.rm = TRUE) / sum(w, na.rm = TRUE),
+    #Variance of the weighted mean = 1 / (sum of weights).
+    vi_study = 1 / sum(w, na.rm = TRUE),
+    #Standard error for the study’s pooled effect.
+    se_study = sqrt(vi_study),
+    #Return an ungrouped data frame.
+    .groups = "drop"
+  )
+
+#build the Meta-analysis object (random-effects)
+# Create a meta-analysis from study-level effects (yi_study) and their SEs (se_study), with labels study_id, using study_es as input.
+m.gen <- metagen(
+  TE = yi_study, seTE = se_study,
+  studlab = study_id,
+  data = study_es,
+  #Just labels the effect measure as “(p)logit” for plots/reports.
+  sm = "PLOGIT", 
+  #Use a random-effects model (assumes true effects vary across studies)
+  random = TRUE,
+  #Estimate between-study variance (τ²) with REML.
+  method.tau = "REML",
+  #Use Hartung–Knapp adjustments for the random-effects confidence intervals.
+  method.random.ci = "HK"
+)
+
+#Funnel plot
+meta::funnel(
+  m.gen,
+  xlab = "Logit proportion of mite mortality",
+  ylab = "Standard Error",
+  main = "Funnel plot (one point per study)"
+)
+
+# Egger’s regression test (asymmetry test)
+meta::metabias(m.gen, method.bias = "linreg")
+
+```
+
+```{r}
+#Contour-enhanced funnel plot 
+col.contour <- c("gray75", "gray85", "gray95")   # p < .10, .05, .01
+
+meta::funnel(
+  m.gen,
+  contour    = c(0.90, 0.95, 0.99),  # significance contours
+  col.contour= col.contour,
+  xlab = "Logit proportion of mite mortality",
+  ylab = "Standard Error",
+  main = "Contour-Enhanced Funnel Plot"
+)
+
+# Add legend 
+usr <- par("usr")
+legend(x = usr[2], y = usr[3],
+       legend = c("p < 0.10", "p < 0.05", "p < 0.01"),
+       fill = col.contour, bty = "n", xjust = 1, yjust = 0)
+```
+
+estimate baseline (mite mortality without acarcide or IRM)
+
+```{r}
+# Baseline probability (probability of mite mortality (no acarcide, no rotation, no mixture, 0 years treated/stopped))
+
+base_row <- tibble(
+  years_treated = 0, years_stopped = 0,
+  rotation = 0, mixture = 0,
+  acaricide = factor("None", levels = levels(dat$acaricide)),
+  n = 1L
+)
+
+p0 <- posterior_linpred(
+  fit, newdata = base_row, re_formula = NA, transform = TRUE
+) |> as.numeric() |> mean()
+
+p0
+
+```
+
+# Probability plots: predicted mortality vs years treated / years stopped
+```{r}
+
+# 1) Predictions grid with other covariates held at baseline: no rotation, no mixture, acaricide = None.
+newdat_treat <- tibble(
+  years_treated = seq(min(dat$years_treated, na.rm = TRUE),
+                      max(dat$years_treated, na.rm = TRUE), by = 1),
+  years_stopped = 0,
+  rotation = 0, mixture = 0,
+  acaricide = factor("None", levels = levels(dat$acaricide)),
+  n = 1L
+)
+
+newdat_stop <- tibble(
+  years_treated = 0,
+  years_stopped = seq(min(dat$years_stopped, na.rm = TRUE),
+                      max(dat$years_stopped, na.rm = TRUE), by = 1),
+  rotation = 0, mixture = 0,
+  acaricide = factor("None", levels = levels(dat$acaricide)),
+  n = 1L
+)
+
+# 2) Posterior predictions on the response scale (probabilities), summarised to mean & 95% CrI
+pred_treat <- add_fitted_draws(
+  fit, newdata = newdat_treat, re_formula = NA, scale = "response"
+) %>%
+  group_by(years_treated) %>%
+  summarise(
+    p = mean(.value),
+    l = quantile(.value, 0.025),
+    u = quantile(.value, 0.975),
+    .groups = "drop"
+  )
+
+pred_stop <- add_fitted_draws(
+  fit, newdata = newdat_stop, re_formula = NA, scale = "response"
+) %>%
+  group_by(years_stopped) %>%
+  summarise(
+    p = mean(.value),
+    l = quantile(.value, 0.025),
+    u = quantile(.value, 0.975),
+    .groups = "drop"
+  )
+
+# 3) labels
+
+p_main1 <- ggplot(pred_treat, aes(x = years_treated, y = p)) +
+  geom_ribbon(aes(ymin = l, ymax = u), alpha = 0.20) +
+  geom_line(linewidth = 0.9) +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 1),
+    limits = c(0, 1),
+    expand = expansion(mult = c(0, 0.02))
+  ) +
+  scale_x_continuous(breaks = pretty(pred_treat$years_treated)) +
+  labs(
+    x = "Years treated (cumulative)",
+    y = "Predicted mortality (%)"
+  ) +
+  theme_minimal(base_size = 12)
+
+p_main2 <- ggplot(pred_stop, aes(x = years_stopped, y = p)) +
+  geom_ribbon(aes(ymin = l, ymax = u), alpha = 0.20) +
+  geom_line(linewidth = 0.9) +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 1),
+    limits = c(0, 1),
+    expand = expansion(mult = c(0, 0.02))
+  ) +
+  scale_x_continuous(breaks = pretty(pred_stop$years_stopped)) +
+  labs(
+    x = "Years since treatment ceased",
+    y = "Predicted mortality (%)"
+  ) +
+  theme_minimal(base_size = 12)
+
+p_main1 | p_main2
+```
+probability table: acaricides 
+```{r}
+# 1) Prediction grid: one row per acaricide at baseline covariates
+acar_levels <- levels(dat$acaricide)
+newdat_acar <- tibble::tibble(
+  years_treated   = 0,
+  years_stopped   = 0,
+  rotation        = 0,
+  mixture         = 0,
+  scaled_log_conc = 0,                           # baseline (mean of scaled predictor)
+  acaricide       = factor(acar_levels, levels = acar_levels),
+  n               = 1L                           # epred => predicted probabilities
+)
+
+# 2) Posterior predictions (probabilities) and tidy to long format
+draws <- posterior_epred(fit2, newdata = newdat_acar, re_formula = NA)
+post  <- tibble::as_tibble(draws) |>
+  rlang::set_names(acar_levels) |>
+  dplyr::mutate(.draw = dplyr::row_number()) |>
+  tidyr::pivot_longer(-.draw, names_to = "Acaricide", values_to = "p")
+
+# 3) Baseline per draw ("None") to compute Δ vs baseline
+base_draws <- post |>
+  dplyr::filter(Acaricide == "None") |>
+  dplyr::select(.draw, p_base = p)
+
+# 4) Summaries by acaricide: mean % and Δ vs baseline (pp), both with 95% CrI
+tab_abs <- post |>
+  dplyr::group_by(Acaricide) |>
+  dplyr::summarise(
+    MeanPct = mean(p) * 100,
+    l95     = quantile(p, 0.025) * 100,
+    u95     = quantile(p, 0.975) * 100,
+    .groups = "drop"
+  )
+
+tab_delta <- post |>
+  dplyr::left_join(base_draws, by = ".draw") |>
+  dplyr::mutate(DeltaPP = (p - p_base) * 100) |>
+  dplyr::group_by(Acaricide) |>
+  dplyr::summarise(
+    d_mean = mean(DeltaPP),
+    d_l95  = quantile(DeltaPP, 0.025),
+    d_u95  = quantile(DeltaPP, 0.975),
+    .groups = "drop"
+  )
+
+# 5) Combine, drop "None", order nicely, format
+order_vec <- c("Amitraz", "TauFluvalinate", "Flumethrin", "Coumaphos")
+
+tab_final <- tab_abs |>
+  dplyr::inner_join(tab_delta, by = "Acaricide") |>
+  dplyr::filter(Acaricide != "None") |>
+  dplyr::mutate(Acaricide = factor(Acaricide, levels = order_vec[order_vec %in% Acaricide])) |>
+  dplyr::arrange(Acaricide) |>
+  dplyr::transmute(
+    Acaricide,
+    `Mean mite mortality (%) [95% CrI]`       = sprintf("%.1f (%.1f–%.1f)", MeanPct, l95, u95),
+    `Difference from baseline (pp) [95% CrI]` = sprintf("%+.1f (%+.1f–%+.1f)", d_mean, d_l95, d_u95)
+  )
+
+# 6) Baseline ("None") mean mortality for caption
+p0_fit2 <- post |>
+  dplyr::filter(Acaricide == "None") |>
+  dplyr::summarise(m = mean(p)) |>
+  dplyr::pull(m)
+
+# 7) Render
+knitr::kable(
+  tab_final,
+  caption = glue::glue(
+    "Table. Posterior predicted mite mortality by acaricide at baseline (no rotation/mixture, ",
+    "0 years treated/stopped, scaled_log_conc = 0). Baseline (None) ≈ {scales::percent(p0_fit2, 1)}. ",
+    "Δ values are percentage points vs baseline."
+  )
+)
+```
+
+Probability table: IRM + treatment history
+
+```{r}
+make_main_effects_table <- function(fit, p0) {
+  # 1) Fixed-effect summaries with 95% CrI
+  fx <- brms::fixef(fit, probs = c(0.025, 0.975)) |> as.data.frame()
+  fx$term <- rownames(fx); rownames(fx) <- NULL
+
+  # 2) Identify column names for lower/upper CrI (brms may label them differently)
+  lower <- intersect(c("l-95% CI","Q2.5","2.5%"), names(fx))[1]
+  upper <- intersect(c("u-95% CI","Q97.5","97.5%"), names(fx))[1]
+
+  # 3) Keep only predictors of interest, and normalise factor names
+  keep <- c("years_treated","years_stopped","rotation","mixture")
+
+  fx |>
+    dplyr::mutate(term = dplyr::recode(term,
+                                       "rotationTRUE" = "rotation",
+                                       "mixtureTRUE"  = "mixture")) |>
+    dplyr::filter(term %in% keep) |>
+    # 4) Translate log-odds effects to % point changes at baseline p0
+    dplyr::transmute(
+      key  = term,
+      mean = (plogis(qlogis(p0) + Estimate)       - p0) * 100,
+      l95  = (plogis(qlogis(p0) + .data[[lower]]) - p0) * 100,
+      u95  = (plogis(qlogis(p0) + .data[[upper]]) - p0) * 100
+    ) |>
+    # 5) Friendly labels + qualitative interpretation
+    dplyr::mutate(
+      Predictor = dplyr::recode(key,
+        "years_treated" = "Years treated (+1y)",
+        "years_stopped" = "Years off (+1y)",
+        "rotation"      = "Rotation (Y vs N)",
+        "mixture"       = "Mixture (Y vs N)"
+      ),
+      `Effect on mortality` = dplyr::case_when(
+        l95 > 0  ~ "Increase",
+        u95 < 0  ~ "Decrease",
+        TRUE     ~ "Uncertain"
+      ),
+      `Change from baseline (pp)` = sprintf("%+.1f (%+.1f to %+.1f)", mean, l95, u95)
+    ) |>
+    dplyr::select(Predictor, `Effect on mortality`, `Change from baseline (pp)`)
+}
+
+# Build table and print
+tab_simple <- make_main_effects_table(fit, p0)
+
+knitr::kable(
+  tab_simple,
+  caption = glue::glue(
+    "Effects at baseline (mortality ≈ {scales::percent(p0, 1)}). ",
+    "Positive = higher mortality; negative = lower mortality."
+  )
+)
+```
+

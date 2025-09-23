@@ -84,7 +84,7 @@ vc <- VarCorr(fit)
 (ICC <- vc$study_id$sd[1]/(vc$study_id$sd[1] + pi**2/3))
 ```
 ## Publication bias 
-### funnel plot
+### Funnel plot
 ```{r}
 funnel_data <- posterior_summary(fit2) %>%
   as_tibble(rownames = "parameter") %>%
@@ -107,7 +107,7 @@ ggplot(funnel_data, aes(x = effect_size, y = std_error)) +
   theme_minimal()
 
 ```
-### funnel plot with study specific labels
+### Funnel plot with study specific labels
 ```{r}
 
 # 1) Build a clean lookup from your raw data
@@ -197,7 +197,7 @@ regtest(meta_analysis)
 ranktest(meta_analysis)
 
 ```
-## estimate baseline (mite mortality without acarcide or IRM)
+## Estimate baseline (mite mortality without acarcide or IRM)
 
 ```{r}
 # Baseline probability (probability of mite mortality (no acarcide, no rotation, no mixture, 0 years treated/stopped))

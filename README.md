@@ -18,7 +18,7 @@ library(grid)
 
 ## Read data
 ```{r}
-dat <- read_xlsx("final data metaanalysis SE corrected.xlsx") %>%
+dat <- read_xlsx("final data metaanalysis.xlsx") %>%
   mutate( # change spelling so everything uses "Tau-fluvalinate"
     acaricide = recode(acaricide, "TauFluvalinate" = "Tau-fluvalinate"),
          rot_mix = rotation | mixture,

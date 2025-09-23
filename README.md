@@ -16,7 +16,7 @@ library(Matrix)
 library(grid)
 ```
 
-## Read data|
+## Read data
 ```{r}
 dat <- read_xlsx("final data metaanalysis SE corrected.xlsx") %>%
   mutate( # change spelling so everything uses "Tau-fluvalinate"

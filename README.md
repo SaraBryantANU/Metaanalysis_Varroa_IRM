@@ -1,7 +1,7 @@
 
-#Meta analysis of acaricide resistance in *Varroa destructor*"
+# Meta analysis of acaricide resistance in *Varroa destructor*"
 
-##load libraries 
+## Load libraries 
 ```{r setup =FALSE, warning=FALSE}
 library(tidyverse)
 library(readxl)
@@ -16,7 +16,7 @@ library(Matrix)
 library(grid)
 ```
 
-##Read data|
+## Read data|
 ```{r}
 dat <- read_xlsx("final data metaanalysis SE corrected.xlsx") %>%
   mutate( # change spelling so everything uses "Tau-fluvalinate"
@@ -30,7 +30,7 @@ dat$acaricide <- factor(dat$acaricide, levels = c("None", "Amitraz", "Coumaphos"
 
 ```
 
-##Model 1 (no concentartion term)
+## Model 1 (no concentartion term)
 ```{r}
 priors <- c(
   prior(normal(0, 5), class = Intercept),
@@ -48,7 +48,7 @@ fit <- brm(
 
 summary(fit)
 ```
-##Model 2 (concentration term)
+## Model 2 (concentration term)
 ```{r}
 dat <- dat %>% mutate(scaled_log_conc = scale(log(conc + 1))) 
 
@@ -71,20 +71,20 @@ fit2 <- brm(
 summary(fit2)
 
 ```
-##Compare model fit
+## Compare model fit
 ```{r}
 loo(fit2, fit)
 ```
 ```{r}
 pp_check(fit2)
 ```
-##Compute heterogeneity via ICC
+## Compute heterogeneity via ICC
 ```{r}
 vc <- VarCorr(fit)
 (ICC <- vc$study_id$sd[1]/(vc$study_id$sd[1] + pi**2/3))
 ```
-##Publication bias 
-###funnel plot
+## Publication bias 
+### funnel plot
 ```{r}
 funnel_data <- posterior_summary(fit2) %>%
   as_tibble(rownames = "parameter") %>%
@@ -173,7 +173,7 @@ ggplot(funnel_data, aes(x = effect_size, y = std_error)) +
     )
   )
 ```
-### standard funnel plot
+### Standard funnel plot
 ```{r}
 # data
 
@@ -190,14 +190,14 @@ meta_analysis <- rma(yi = effect_size, sei = std_error, data = funnel_data, meth
 
 funnel(meta_analysis, main = "funnel plot", xlab = "Study-Specific Effect (Log-Odds)", ylab = "Standard Error")
 
-#eggers test for funnel plot symmetry
+### eggers test for funnel plot symmetry
 regtest(meta_analysis)
 
-# Begg’s rank correlation test (complementary, different assumptions)
+### Begg’s rank correlation test (complementary, different assumptions)
 ranktest(meta_analysis)
 
 ```
-##estimate baseline (mite mortality without acarcide or IRM)
+## estimate baseline (mite mortality without acarcide or IRM)
 
 ```{r}
 # Baseline probability (probability of mite mortality (no acarcide, no rotation, no mixture, 0 years treated/stopped))
@@ -294,7 +294,7 @@ p_main2 <- ggplot(pred_stop, aes(x = years_stopped, y = p)) +
 
 p_main1 | p_main2
 ```
-##Probability table: acaricides 
+## Probability table: acaricides 
 ```{r}
 ### 1) Prediction grid: one row per acaricide at baseline covariates
 acar_levels <- levels(dat$acaricide)
@@ -372,7 +372,7 @@ knitr::kable(
 )
 ```
 
-##Probability table: IRM + treatment history
+## Probability table: IRM + treatment history
 
 ```{r}
 make_main_effects_table <- function(fit, p0) {

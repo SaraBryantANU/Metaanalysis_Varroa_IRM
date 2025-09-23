@@ -72,8 +72,9 @@ summary(fit2)
 
 ```
 ##Compare model fit
+```{r}
 loo(fit2, fit)
-
+```
 ```{r}
 pp_check(fit2)
 ```
